@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use libchiaki::{
     ConnectInfo, Discovery, Event, Log, LogLevel, Regist, RegistEvent, Session, VideoSample, ffi,
@@ -180,6 +180,8 @@ enum Msg {
     Video(Vec<u8>, i32),
     Audio(Vec<u8>),
     AudioFormat { rate: u32, frame_size: u32 },
+    /// 到点请求关键帧 (video_sample 按帧计数触发)。
+    RequestIdr,
 }
 
 pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
@@ -259,9 +261,28 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
     });
 
     // 视频: 拷贝出 C 缓冲, 拥塞时丢帧并返回 false (chiaki 会补 IDR)。
+    // 每 idr_frame_interval 帧 (fps × idr_interval) 请求一次关键帧。
+    let fps = match a.fps {
+        FpsArg::F30 => 30,
+        FpsArg::F60 => 60,
+    };
+    let idr_frame_interval = if a.idr_interval > 0.0 {
+        (fps as f64 * a.idr_interval).round().max(1.0) as u64
+    } else {
+        0
+    };
     let vtx = media_tx.clone();
     let mut vdropped = 0u64;
+    let mut vframes_since_idr = 0u64;
     session.set_video_sample_callback(move |s: VideoSample| {
+        // 帧号推进 (含丢帧间隙), 到点发 RequestIdr 让主循环调 request_idr。
+        if idr_frame_interval > 0 {
+            vframes_since_idr += 1 + s.frames_lost.max(0) as u64;
+            if vframes_since_idr >= idr_frame_interval {
+                let _ = vtx.try_send(Msg::RequestIdr);
+                vframes_since_idr = 0;
+            }
+        }
         match vtx.try_send(Msg::Video(s.data.to_vec(), s.frames_lost)) {
             Ok(()) => true,
             Err(mpsc::TrySendError::Full(_)) => {
@@ -317,34 +338,35 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
     } else {
         Box::new(File::create(&a.output).map_err(|e| e.to_string())?)
     };
-    let fps = match a.fps {
-        FpsArg::F30 => 30,
-        FpsArg::F60 => 60,
-    };
     let mut mux = Mux::new(out, vcodec, fps).map_err(|e| e.to_string())?;
 
     let login_pin = a.login_pin.clone();
-    let idr_interval = Duration::from_secs_f64(a.idr_interval);
-    let mut last_idr: Option<Instant> = None;
     loop {
         while let Ok(msg) = media_rx.try_recv() {
-            let r = match msg {
-                Msg::Video(b, lost) => mux.push_video(&b, lost),
-                Msg::Audio(b) => mux.push_audio(&b),
-                Msg::AudioFormat { rate, frame_size } => {
-                    mux.set_audio_format(rate, frame_size);
-                    Ok(())
+            match msg {
+                Msg::RequestIdr => {
+                    let _ = session.request_idr();
                 }
-            };
-            if let Err(e) = r {
-                eprintln!("write error: {e}");
-                return Ok(());
+                msg => {
+                    let r = match msg {
+                        Msg::Video(b, lost) => mux.push_video(&b, lost),
+                        Msg::Audio(b) => mux.push_audio(&b),
+                        Msg::AudioFormat { rate, frame_size } => {
+                            mux.set_audio_format(rate, frame_size);
+                            Ok(())
+                        }
+                        Msg::RequestIdr => unreachable!(),
+                    };
+                    if let Err(e) = r {
+                        eprintln!("write error: {e}");
+                        return Ok(());
+                    }
+                }
             }
         }
         match ev_rx.recv_timeout(Duration::from_millis(50)) {
             Ok(Event::Connected) => {
                 eprintln!("connected, streaming");
-                last_idr = Some(Instant::now());
             }
             Ok(Event::LoginPinRequest { pin_incorrect }) => {
                 if pin_incorrect {
@@ -370,14 +392,6 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
             Err(RecvTimeoutError::Disconnected) => {
                 eprintln!("event channel closed");
                 break;
-            }
-        }
-        if !idr_interval.is_zero() {
-            if let Some(t) = last_idr {
-                if t.elapsed() >= idr_interval {
-                    let _ = session.request_idr();
-                    last_idr = Some(Instant::now());
-                }
             }
         }
     }

@@ -135,7 +135,7 @@ pub struct StreamArgs {
     pub login_pin: Option<String>,
     #[arg(long, value_enum)]
     pub resolution: Option<ResArg>,
-    #[arg(long, value_enum, default_value = "30")]
+    #[arg(long, value_enum, default_value = "60")]
     pub fps: FpsArg,
     #[arg(long, value_enum, default_value = "h264")]
     pub codec: CodecArg,
