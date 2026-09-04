@@ -334,7 +334,10 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
                     Ok(())
                 }
             };
-            r.map_err(|e| e.to_string())?;
+            if let Err(e) = r {
+                eprintln!("write error: {e}");
+                return Ok(());
+            }
         }
         match ev_rx.recv_timeout(Duration::from_millis(50)) {
             Ok(Event::Connected) => eprintln!("connected, streaming"),
@@ -368,7 +371,10 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
 
     let _ = session.stop();
     let _ = session.join();
-    mux.flush().map_err(|e| e.to_string())?;
+    if let Err(e) = mux.flush() {
+        eprintln!("write error: {e}");
+        return Ok(());
+    }
     eprintln!("done");
     Ok(())
 }
