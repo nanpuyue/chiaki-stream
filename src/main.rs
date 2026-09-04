@@ -16,10 +16,11 @@ use clap::Parser;
 
 fn main() {
     let cli = Cli::parse();
+    let level = cli.log_level;
     let r = match &cli.cmd {
-        Cmd::Regist(a) => run::cmd_regist(a),
-        Cmd::Stream(a) => run::cmd_stream(a),
-        Cmd::Wakeup(a) => run::cmd_wakeup(a),
+        Cmd::Regist(a) => run::cmd_regist(a, level),
+        Cmd::Stream(a) => run::cmd_stream(a, level),
+        Cmd::Wakeup(a) => run::cmd_wakeup(a, level),
         Cmd::List => run::cmd_list(),
     };
     if let Err(e) = r {

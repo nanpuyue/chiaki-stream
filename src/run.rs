@@ -6,11 +6,13 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
 use libchiaki::{
-    ConnectInfo, Discovery, Event, Log, Regist, RegistEvent, Session, VideoSample, ffi,
+    ConnectInfo, Discovery, Event, Log, LogLevel, Regist, RegistEvent, Session, VideoSample, ffi,
     lib_init, log_level_char, LOG_ALL,
 };
 
-use crate::args::{CodecArg, ConsoleArg, FpsArg, RegistArgs, ResArg, StreamArgs, WakeupArgs};
+use crate::args::{
+    CodecArg, ConsoleArg, FpsArg, LogLevelArg, RegistArgs, ResArg, StreamArgs, WakeupArgs,
+};
 use crate::creds::{
     expand_regist_key_text as exp_regist_key, parse_account_id, parse_hex16, parse_target,
     regist_key_text, to_hex, wakeup_credential,
@@ -19,8 +21,25 @@ use crate::mux::{Mux, VideoCodec};
 
 type Res<T> = Result<T, String>;
 
-fn new_log() -> Log {
-    Log::new(LOG_ALL, |lvl, msg| {
+/// 日志级别 -> chiaki 库日志掩码 (选择该级别及更严重级别, 高级别覆盖低级别)。
+fn log_mask(level: LogLevelArg) -> u32 {
+    use LogLevelArg::*;
+    let e = LogLevel::CHIAKI_LOG_ERROR as u32;
+    let w = LogLevel::CHIAKI_LOG_WARNING as u32;
+    let i = LogLevel::CHIAKI_LOG_INFO as u32;
+    let v = LogLevel::CHIAKI_LOG_VERBOSE as u32;
+    match level {
+        Off => 0,
+        Error => e,
+        Warning => w | e,
+        Info => i | w | e,
+        Verbose => v | i | w | e,
+        Debug => LOG_ALL,
+    }
+}
+
+fn new_log(level: LogLevelArg) -> Log {
+    Log::new(log_mask(level), |lvl, msg| {
         eprintln!("[{}] {}", log_level_char(lvl), msg);
     })
 }
@@ -84,7 +103,7 @@ fn res_label(r: ResArg) -> &'static str {
 // regist
 // ---------------------------------------------------------------------------
 
-pub fn cmd_regist(a: &RegistArgs) -> Res<()> {
+pub fn cmd_regist(a: &RegistArgs, level: LogLevelArg) -> Res<()> {
     if a.account_id.is_none() && a.online_id.is_none() {
         return Err(
             "regist requires at least one PSN identity: --account-id <16-hex> or --online-id <name>"
@@ -92,7 +111,7 @@ pub fn cmd_regist(a: &RegistArgs) -> Res<()> {
         );
     }
     lib_init().map_err(|e| e.to_string())?;
-    let log = new_log();
+    let log = new_log(level);
     let target = parse_target(Some(&a.target), false)?;
     let ps5 = libchiaki::common::target_is_ps5(target);
     let mut info =
@@ -163,7 +182,7 @@ enum Msg {
     AudioFormat { rate: u32, frame_size: u32 },
 }
 
-pub fn cmd_stream(a: &StreamArgs) -> Res<()> {
+pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
     let (host, ps5, target, rk, morning) = if let Some(q) = &a.host_query {
         let hosts = crate::hosts::read_chiaki_hosts()?;
         let h = crate::hosts::find_host(&hosts, q)?;
@@ -186,7 +205,7 @@ pub fn cmd_stream(a: &StreamArgs) -> Res<()> {
     };
 
     lib_init().map_err(|e| e.to_string())?;
-    let log = new_log();
+    let log = new_log(level);
 
     // 分辨率: CLI 显式指定 > 按主机类型默认。
     let resolution = a.resolution.unwrap_or_else(|| default_resolution(ps5, target));
@@ -358,9 +377,9 @@ pub fn cmd_stream(a: &StreamArgs) -> Res<()> {
 // wakeup
 // ---------------------------------------------------------------------------
 
-pub fn cmd_wakeup(a: &WakeupArgs) -> Res<()> {
+pub fn cmd_wakeup(a: &WakeupArgs, level: LogLevelArg) -> Res<()> {
     lib_init().map_err(|e| e.to_string())?;
-    let log = new_log();
+    let log = new_log(level);
     let rk = exp_regist_key(&a.regist_key)?;
     let cred = wakeup_credential(&rk)?;
     Discovery::wakeup(&log, None, &a.host, cred, is_ps5(a.console))

@@ -6,11 +6,33 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(
     name = "chiaki-stream",
     version,
-    about = "PS Remote Play: 注册 / 连接, 音视频直通封装为 MPEG-TS (不转码)"
+    author = "南浦月 <nanpuyue@gmail.com>",
+    about = "PS Remote Play: 注册 / 连接, 音视频直通封装为 MPEG-TS (不转码)",
+    help_template = "{name} {version}\n{author}\n{about}\n\n{usage-heading} {usage}\n\n{all-args}{after-help}"
 )]
 pub struct Cli {
+    /// 日志级别 (选择该级别及更严重级别)。默认 warning (只输出警告和错误)。
+    #[arg(long, value_enum, default_value_t = LogLevelArg::Warning)]
+    pub log_level: LogLevelArg,
     #[command(subcommand)]
     pub cmd: Cmd,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, Default)]
+pub enum LogLevelArg {
+    /// 不输出日志。
+    Off,
+    #[default]
+    /// 仅错误。
+    Error,
+    /// 警告及以上 (默认)。
+    Warning,
+    /// 一般信息及以上。
+    Info,
+    /// 详细信息及以上。
+    Verbose,
+    /// 全部 (最详细, 库的会话/流量细节)。
+    Debug,
 }
 
 #[derive(Subcommand)]
