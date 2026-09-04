@@ -145,6 +145,9 @@ pub struct StreamArgs {
     /// 输出文件, "-" 表示 stdout (日志一律走 stderr)。
     #[arg(long, default_value = "-")]
     pub output: String,
+    /// 每 N 秒强制请求一次关键帧 (IDR), 保证播放器随时可切入画面。0 表示关闭。
+    #[arg(long, default_value = "2")]
+    pub idr_interval: f64,
 }
 
 #[derive(Args, Debug)]

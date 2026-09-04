@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use libchiaki::{
     ConnectInfo, Discovery, Event, Log, LogLevel, Regist, RegistEvent, Session, VideoSample, ffi,
@@ -324,6 +324,8 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
     let mut mux = Mux::new(out, vcodec, fps).map_err(|e| e.to_string())?;
 
     let login_pin = a.login_pin.clone();
+    let idr_interval = Duration::from_secs_f64(a.idr_interval);
+    let mut last_idr: Option<Instant> = None;
     loop {
         while let Ok(msg) = media_rx.try_recv() {
             let r = match msg {
@@ -340,7 +342,10 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
             }
         }
         match ev_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(Event::Connected) => eprintln!("connected, streaming"),
+            Ok(Event::Connected) => {
+                eprintln!("connected, streaming");
+                last_idr = Some(Instant::now());
+            }
             Ok(Event::LoginPinRequest { pin_incorrect }) => {
                 if pin_incorrect {
                     eprintln!("login PIN was incorrect");
@@ -365,6 +370,14 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
             Err(RecvTimeoutError::Disconnected) => {
                 eprintln!("event channel closed");
                 break;
+            }
+        }
+        if !idr_interval.is_zero() {
+            if let Some(t) = last_idr {
+                if t.elapsed() >= idr_interval {
+                    let _ = session.request_idr();
+                    last_idr = Some(Instant::now());
+                }
             }
         }
     }
