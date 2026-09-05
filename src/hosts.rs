@@ -6,8 +6,6 @@
 //! IP 通过 `manual_hosts[].registered_mac == registered_hosts[].server_mac`
 //! 关联出来。
 
-use std::collections::HashMap;
-
 #[derive(Debug, Clone)]
 pub struct ChiakiHost {
     pub nickname: String,
@@ -17,40 +15,6 @@ pub struct ChiakiHost {
     pub ps5: bool,
     pub regist_key: [u8; 16],
     pub morning: [u8; 16],
-}
-
-/// `"@ByteArray(...)"` 解码: 每个字符即一个字节 (Latin-1)。
-pub fn decode_bytearray(s: &str) -> Option<Vec<u8>> {
-    let inner = s.strip_prefix("@ByteArray(")?;
-    // 只剥末尾一个 ')' (数据里若有 ')' 字节则保留)。
-    let inner = inner.strip_suffix(')')?;
-    inner
-        .chars()
-        .map(|c| {
-            let u = c as u32;
-            if u < 256 { Some(u as u8) } else { None }
-        })
-        .collect()
-}
-
-/// REG_BINARY 解码: UTF-16 的 `"@ByteArray(...)"`, 否则裸字节兜底
-/// (长度必须吻合才收)。
-pub fn decode_binary(bytes: &[u8], expect_len: usize) -> Option<Vec<u8>> {
-    if bytes.len() >= 2 && bytes.len() % 2 == 0 {
-        let units: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        if let Ok(s) = String::from_utf16(&units) {
-            if let Some(v) = decode_bytearray(&s) {
-                return Some(v);
-            }
-        }
-    }
-    if bytes.len() == expect_len {
-        return Some(bytes.to_vec());
-    }
-    None
 }
 
 #[cfg(test)]
@@ -97,8 +61,43 @@ pub fn find_host<'a>(hosts: &'a [ChiakiHost], query: &str) -> Result<&'a ChiakiH
 #[cfg(windows)]
 mod win {
     use super::*;
+    use std::collections::HashMap;
     use winreg::enums::{HKEY_CURRENT_USER, REG_BINARY, REG_DWORD, REG_EXPAND_SZ, REG_SZ};
     use winreg::RegKey;
+
+    /// `"@ByteArray(...)"` 解码: 每个字符即一个字节 (Latin-1)。
+    fn decode_bytearray(s: &str) -> Option<Vec<u8>> {
+        let inner = s.strip_prefix("@ByteArray(")?;
+        // 只剥末尾一个 ')' (数据里若有 ')' 字节则保留)。
+        let inner = inner.strip_suffix(')')?;
+        inner
+            .chars()
+            .map(|c| {
+                let u = c as u32;
+                if u < 256 { Some(u as u8) } else { None }
+            })
+            .collect()
+    }
+
+    /// REG_BINARY 解码: UTF-16 的 `"@ByteArray(...)"`, 否则裸字节兜底
+    /// (长度必须吻合才收)。
+    fn decode_binary(bytes: &[u8], expect_len: usize) -> Option<Vec<u8>> {
+        if bytes.len() >= 2 && bytes.len() % 2 == 0 {
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            if let Ok(s) = String::from_utf16(&units) {
+                if let Some(v) = decode_bytearray(&s) {
+                    return Some(v);
+                }
+            }
+        }
+        if bytes.len() == expect_len {
+            return Some(bytes.to_vec());
+        }
+        None
+    }
 
     /// 自有化后的注册表值 (winreg 的 RegValue 借用 key, 不能返回)。
     enum RawVal {
