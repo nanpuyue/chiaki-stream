@@ -43,7 +43,7 @@ pub enum Cmd {
     Stream(StreamArgs),
     /// 唤醒待机中的主机。
     Wakeup(WakeupArgs),
-    /// 列出官方 chiaki-ng 已注册的主机 (仅 Windows)。
+    /// 列出官方 chiaki-ng 已注册的主机 (仅 Windows / macOS)。
     List,
 }
 
@@ -111,17 +111,17 @@ pub struct RegistArgs {
 
 #[derive(Args, Debug)]
 pub struct StreamArgs {
-    /// 主机昵称/IP/MAC: 从官方 chiaki-ng 注册表读取并直连。
-    /// 给了它就不用再给 --host/--console/--regist-key/--morning。
+    /// 主机昵称/IP/MAC: 从官方 chiaki-ng 已配对主机读取并直连
+    /// (仅 Windows / macOS)。给了它就不用再给 --host/--console/--regist-key/--morning。
     #[arg(index = 1, value_name = "NICKNAME")]
     pub host_query: Option<String>,
-    /// 主机 IP (手动模式必填; 注册表模式下可覆盖)。
+    /// 主机 IP (手动模式必填; 主机查询模式下可覆盖)。
     #[arg(long)]
     pub host: Option<String>,
     /// 主机类型 (手动模式必填)。
     #[arg(long, value_enum)]
     pub console: Option<ConsoleArg>,
-    /// regist-key 文本 (如 "4a163489", 即 regist 命令输出)。
+    /// regist-key 文本 (如 "deadbeef", 即 regist 命令输出)。
     #[arg(long)]
     pub regist_key: Option<String>,
     /// morning (rp_key), 32 个 hex 字符。
@@ -157,7 +157,7 @@ pub struct WakeupArgs {
     pub host: String,
     #[arg(long, value_enum)]
     pub console: ConsoleArg,
-    /// regist-key 文本 (如 "4a163489")。
+    /// regist-key 文本 (如 "deadbeef")。
     #[arg(long)]
     pub regist_key: String,
 }

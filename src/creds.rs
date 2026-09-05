@@ -79,7 +79,7 @@ pub fn to_hex(bytes: &[u8]) -> String {
 
 /// 把 16 字节 regist_key 数组的文本部分 (到首个 NUL 前) 还原为字符串。
 ///
-/// chiaki-ng 的 `rp_regist_key` 存的是可打印文本 (如 "4a163489")
+/// chiaki-ng 的 `rp_regist_key` 存的是可打印文本 (如 "deadbeef")
 /// 加 NUL 填充到 16 字节; 本函数提取该文本供 CLI 显示 / 传参。
 pub fn regist_key_text(bytes: &[u8; 16]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(16);

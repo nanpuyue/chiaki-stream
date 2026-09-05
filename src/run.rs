@@ -189,7 +189,7 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
         let hosts = crate::hosts::read_chiaki_hosts()?;
         let h = crate::hosts::find_host(&hosts, q)?;
         let host = a.host.clone().or(h.host_ip.clone()).ok_or(
-            "registry has no IP for this host (DHCP changed?), pass --host explicitly"
+            "chiaki-ng has no IP for this host (DHCP changed?), pass --host explicitly"
                 .to_string(),
         )?;
         eprintln!(

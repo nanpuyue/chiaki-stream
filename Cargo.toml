@@ -13,3 +13,6 @@ mpeg2ts = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1"
