@@ -2,7 +2,7 @@
 name = "chiaki-stream"
 version = "0.1.0"
 edition = "2021"
-description = "PlayStation 4/5 Remote Play 命令行串流工具: 配对注册、主机唤醒、音视频封装 MPEG-TS 输出"
+description = "PlayStation 4/5 Remote Play command-line streaming tool: pairing, wakeup, and pass-through audio/video output as MPEG-TS"
 authors = ["南浦月 <nanpuyue@gmail.com>"]
 license = "AGPL-3.0"
 
