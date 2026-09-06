@@ -77,6 +77,7 @@ enum FirstKeyframe {
 /// [`FirstKeyframe::Timeout`]。等待期间到达的非关键帧块在这里被丢弃,
 /// 不会发给客户端。
 async fn wait_first_keyframe(
+    peer: SocketAddr,
     codec: VideoCodec,
     rx: &mut broadcast::Receiver<Bytes>,
     wait: Duration,
@@ -90,7 +91,7 @@ async fn wait_first_keyframe(
             Ok(Err(broadcast::error::RecvError::Closed)) => return FirstKeyframe::Closed,
             // 落后于广播环: 错过的块直接跳过 (直播语义)。
             Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
-                eprintln!("http-ts: client lagged, skipped {n} chunk(s)");
+                eprintln!("http-ts: {peer} lagged, skipped {n} chunk(s)");
             }
             Ok(Ok(data)) => {
                 if chunk_is_video_keyframe(codec, &data) {
@@ -101,15 +102,34 @@ async fn wait_first_keyframe(
     }
 }
 
-/// 把广播流搬到客户端 body 通道: 首包 (关键帧) 起头, 落后的块跳过。
-/// 客户端断开或流结束时通道关闭, body 随之结束。
+/// 每客户端一个任务: 先等首个关键帧 (丢弃等待期间的非关键帧块), 再把
+/// 广播流搬进 body 通道。客户端断开 (发送失败) 与流结束 (广播关闭) 都
+/// 在这里记录日志并结束任务。
 async fn pump(
-    first: FirstKeyframe,
+    peer: SocketAddr,
+    state: AppState,
     mut rx: broadcast::Receiver<Bytes>,
     tx: mpsc::Sender<Bytes>,
 ) {
-    if let FirstKeyframe::Found(data) = first {
-        if tx.send(data).await.is_err() {
+    match wait_first_keyframe(peer, state.codec, &mut rx, state.keyframe_wait).await {
+        FirstKeyframe::Found(data) => {
+            eprintln!(
+                "http-ts: {peer} stream start (keyframe, {} active)",
+                state.tx.receiver_count()
+            );
+            if tx.send(data).await.is_err() {
+                eprintln!("http-ts: {peer} disconnected");
+                return;
+            }
+        }
+        FirstKeyframe::Timeout => {
+            eprintln!(
+                "http-ts: {peer} stream start (timeout, {} active)",
+                state.tx.receiver_count()
+            );
+        }
+        FirstKeyframe::Closed => {
+            eprintln!("http-ts: {peer} stream ended before first keyframe");
             return;
         }
     }
@@ -117,13 +137,17 @@ async fn pump(
         match rx.recv().await {
             Ok(data) => {
                 if tx.send(data).await.is_err() {
+                    eprintln!("http-ts: {peer} disconnected");
                     return;
                 }
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
-                eprintln!("http-ts: client lagged, skipped {n} chunk(s)");
+                eprintln!("http-ts: {peer} lagged, skipped {n} chunk(s)");
             }
-            Err(broadcast::error::RecvError::Closed) => return,
+            Err(broadcast::error::RecvError::Closed) => {
+                eprintln!("http-ts: {peer} stream ended");
+                return;
+            }
         }
     }
 }
@@ -187,35 +211,18 @@ async fn stream(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> Response {
     // 先订阅再等关键帧: 等待期间到达的块不会错过订阅窗口。
-    let mut rx = state.tx.subscribe();
+    let rx = state.tx.subscribe();
     eprintln!(
         "http-ts: client {peer} connected ({} active), waiting up to {:?} for keyframe",
         state.tx.receiver_count(),
         state.keyframe_wait
     );
-    let first = wait_first_keyframe(state.codec, &mut rx, state.keyframe_wait).await;
-    if matches!(first, FirstKeyframe::Closed) {
-        // 等待期间流结束 (会话已断)。
-        eprintln!("http-ts: {peer} stream closed while waiting");
-        return Response::builder()
-            .status(StatusCode::SERVICE_UNAVAILABLE)
-            .body(Body::from("stream is not running\n"))
-            .expect("static response");
-    }
-    match &first {
-        FirstKeyframe::Found(_) => {
-            eprintln!("http-ts: {peer} stream start (keyframe, {} active)", state.tx.receiver_count())
-        }
-        FirstKeyframe::Timeout => {
-            eprintln!("http-ts: {peer} stream start (timeout, {} active)", state.tx.receiver_count())
-        }
-        FirstKeyframe::Closed => {}
-    }
-
-    let (tx, rx_body) = mpsc::channel::<Bytes>(CLIENT_BUFFER_CHUNKS);
-    tokio::spawn(pump(first, rx, tx));
+    // 响应头立即返回; 等关键帧与搬运在每客户端任务里做,
+    // 客户端断开时由发送失败感知并记录日志。
+    let (body_tx, body_rx) = mpsc::channel::<Bytes>(CLIENT_BUFFER_CHUNKS);
+    tokio::spawn(pump(peer, state, rx, body_tx));
     let body =
-        Body::from_stream(ReceiverStream::new(rx_body).map(Ok::<Bytes, std::convert::Infallible>));
+        Body::from_stream(ReceiverStream::new(body_rx).map(Ok::<Bytes, std::convert::Infallible>));
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "video/mp2t")
