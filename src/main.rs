@@ -8,6 +8,7 @@
 mod args;
 mod creds;
 mod hosts;
+mod http;
 mod mux;
 mod run;
 

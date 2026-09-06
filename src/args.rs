@@ -148,6 +148,10 @@ pub struct StreamArgs {
     /// 每 N 秒强制请求一次关键帧 (IDR), 保证播放器随时可切入画面。0 表示关闭。
     #[arg(long, default_value = "2")]
     pub idr_interval: f64,
+    /// HTTP-TS 直播服务绑定地址: `--http` 默认 127.0.0.1:8080, 也可指定
+    /// 如 `--http 0.0.0.0:8080`。TS 经 HTTP 扇出, 编码不变; 忽略 --output。
+    #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:8080")]
+    pub http: Option<String>,
 }
 
 #[derive(Args, Debug)]

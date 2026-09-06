@@ -337,41 +337,53 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
     session.start().map_err(|e| e.to_string())?;
     eprintln!("session started, waiting for connect...");
 
-    let out: Box<dyn Write> = if a.output == "-" {
-        Box::new(std::io::stdout())
-    } else {
-        Box::new(File::create(&a.output).map_err(|e| e.to_string())?)
-    };
-    let mut mux = Mux::new(out, vcodec, fps).map_err(|e| e.to_string())?;
-
     let login_pin = a.login_pin.clone();
+    // 输出 (含 --http 的 HTTP 服务) 延迟到 Connected 再创建:
+    // 没连上主机前不占用端口、不对外提供服务, 连接失败也不留空文件。
+    let mut mux: Option<Mux<Box<dyn Write>>> = None;
     loop {
-        while let Ok(msg) = media_rx.try_recv() {
-            match msg {
-                Msg::RequestIdr => {
-                    let _ = session.request_idr();
-                }
-                msg => {
-                    let r = match msg {
-                        Msg::Video(b, lost) => mux.push_video(&b, lost),
-                        Msg::Audio(b) => mux.push_audio(&b),
-                        Msg::AudioFormat { rate, frame_size } => {
-                            mux.set_audio_format(rate, frame_size);
-                            Ok(())
+        if let Some(mux) = mux.as_mut() {
+            while let Ok(msg) = media_rx.try_recv() {
+                match msg {
+                    Msg::RequestIdr => {
+                        let _ = session.request_idr();
+                    }
+                    msg => {
+                        let r = match msg {
+                            Msg::Video(b, lost) => mux.push_video(&b, lost),
+                            Msg::Audio(b) => mux.push_audio(&b),
+                            Msg::AudioFormat { rate, frame_size } => {
+                                mux.set_audio_format(rate, frame_size);
+                                Ok(())
+                            }
+                            Msg::RequestIdr => unreachable!(),
+                        };
+                        if let Err(e) = r {
+                            eprintln!("write error: {e}");
+                            return Ok(());
                         }
-                        Msg::RequestIdr => unreachable!(),
-                    };
-                    if let Err(e) = r {
-                        eprintln!("write error: {e}");
-                        return Ok(());
                     }
                 }
             }
         }
         match ev_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(Event::Connected) => {
+            Ok(Event::Connected) if mux.is_none() => {
                 eprintln!("connected, streaming");
+                // --http: TS 经 HTTP 直播扇出 (编码不变); 此时忽略 --output。
+                let out: Box<dyn Write> = if let Some(addr) = &a.http {
+                    if a.output != "-" {
+                        eprintln!("--http is set, ignoring --output");
+                    }
+                    let (sink, _) = crate::http::start(addr, vcodec)?;
+                    sink
+                } else if a.output == "-" {
+                    Box::new(std::io::stdout())
+                } else {
+                    Box::new(File::create(&a.output).map_err(|e| e.to_string())?)
+                };
+                mux = Some(Mux::new(out, vcodec, fps).map_err(|e| e.to_string())?);
             }
+            Ok(Event::Connected) => {}
             Ok(Event::LoginPinRequest { pin_incorrect }) => {
                 if pin_incorrect {
                     eprintln!("login PIN was incorrect");
@@ -413,9 +425,11 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
 
     let _ = session.stop();
     let _ = session.join();
-    if let Err(e) = mux.flush() {
-        eprintln!("write error: {e}");
-        return Ok(());
+    if let Some(mux) = mux.as_mut() {
+        if let Err(e) = mux.flush() {
+            eprintln!("write error: {e}");
+            return Ok(());
+        }
     }
     eprintln!("done");
     Ok(())

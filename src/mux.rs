@@ -23,7 +23,7 @@ pub enum VideoCodec {
 }
 
 const PMT_PID: u16 = 0x100;
-const VIDEO_PID: u16 = 0x101;
+pub(crate) const VIDEO_PID: u16 = 0x101;
 const AUDIO_PID: u16 = 0x102;
 
 /// PES 头固定 14 字节 (9 固定 + 5 PTS, 仅 PTS 无 DTS)。

@@ -10,6 +10,9 @@ license = "AGPL-3.0"
 libchiaki = { path = "../libchiaki" }
 clap = { version = "4", features = ["derive"] }
 mpeg2ts = "0.6"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1", features = ["rt", "net", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
