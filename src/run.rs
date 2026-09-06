@@ -235,6 +235,9 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
     }
     info.set_video_preset(map_res(resolution), map_fps(a.fps));
     info.set_bitrate(bitrate);
+    // FEC 纠不回真丢帧时, C 库自动请求 IDR 并置位 waiting_for_idr
+    // (跳过后续 P 帧直到 IDR), 坏参考帧不再流向下游。
+    info.set_enable_idr_on_fec_failure(true);
 
     let vcodec = match a.codec {
         CodecArg::H264 => {
@@ -254,7 +257,8 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
     let mut session = Session::new(info, &log).map_err(|e| e.to_string())?;
 
     let (ev_tx, ev_rx) = mpsc::channel::<Event>();
-    let (media_tx, media_rx) = mpsc::sync_channel::<Msg>(48);
+    // 缓冲 ~4s@60fps: 吸收下游 (管道/磁盘) 短暂停滞, 尽量避免回调丢帧。
+    let (media_tx, media_rx) = mpsc::sync_channel::<Msg>(256);
 
     session.set_event_callback(move |ev| {
         let _ = ev_tx.send(ev);
@@ -386,6 +390,17 @@ pub fn cmd_stream(a: &StreamArgs, level: LogLevelArg) -> Res<()> {
             Ok(Event::Quit { reason_str, .. }) => {
                 eprintln!("quit: {reason_str}");
                 break;
+            }
+            Ok(Event::VideoFecFailure { idr_request_sent, .. }) => {
+                if idr_request_sent {
+                    eprintln!("video FEC failure, waiting for requested IDR");
+                } else if session.request_idr().is_ok() {
+                    // C 库侧 IDR 请求发送失败, 此处重试并补置等待标志 (同 chiaki-ng GUI)。
+                    session.video_receiver_set_waiting_for_idr(true);
+                    eprintln!("video FEC failure, IDR request retried, waiting");
+                } else {
+                    eprintln!("video FEC failure, IDR request retry failed");
+                }
             }
             Ok(ev) => eprintln!("event: {ev:?}"),
             Err(RecvTimeoutError::Timeout) => {}
