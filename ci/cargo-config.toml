@@ -1,0 +1,23 @@
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-Wl,--gc-sections"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=--gc-sections", "-C", "link-arg=-lgcc"]
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=--gc-sections", "-C", "link-arg=-lgcc"]
+
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=--gc-sections", "-C", "link-arg=-lgcc"]
+
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false

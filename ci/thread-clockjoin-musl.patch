@@ -1,0 +1,26 @@
+diff --git a/lib/src/thread.c b/lib/src/thread.c
+index e4f53472..96a49daa 100644
+--- a/lib/src/thread.c
++++ b/lib/src/thread.c
+@@ -362,8 +362,19 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_thread_timedjoin(ChiakiThread *thread, void
+ 	}
+ #else
+ 	struct timespec timeout;
+-	set_timeout(&timeout, timeout_ms);
+-	int r = pthread_clockjoin_np(thread->thread, retval, CLOCK_MONOTONIC, &timeout);
++	/* musl has no pthread_clockjoin_np (glibc 2.32+ only), but both
++	 * glibc (>= 2.30) and musl provide pthread_timedjoin_np, which takes
++	 * a CLOCK_REALTIME absolute deadline. Compute that here; the clock
++	 * base change is invisible to callers of chiaki_thread_timedjoin. */
++	clock_gettime(CLOCK_REALTIME, &timeout);
++	timeout.tv_sec += timeout_ms / 1000;
++	timeout.tv_nsec += (timeout_ms % 1000) * 1000000;
++	if(timeout.tv_nsec >= 1000000000)
++	{
++		timeout.tv_sec += 1;
++		timeout.tv_nsec -= 1000000000;
++	}
++	int r = pthread_timedjoin_np(thread->thread, retval, &timeout);
+ 	if(r != 0)
+ 	{
+ 		if(r == ETIMEDOUT)

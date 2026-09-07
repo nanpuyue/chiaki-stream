@@ -448,6 +448,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 [[package]]
 name = "libchiaki"
 version = "0.1.0"
+source = "git+https://github.com/nanpuyue/libchiaki#39bd41bc577b7fd7ee2efc32fb1b911cec8ee7fc"
 dependencies = [
  "bindgen",
  "cc",

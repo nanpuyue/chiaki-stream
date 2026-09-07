@@ -1,0 +1,260 @@
+# Build & Release chiaki-stream for:
+#   - Linux musl (static): x86_64 / aarch64 / armv7 (armhf)
+#   - macOS: aarch64
+#   - Windows: x86_64 GNU
+#
+# One build matrix: each musl entry builds ITS OWN rootfs sysroot inside the
+# job (docker buildx -> ci/Dockerfile.musl) and cross-compiles right after,
+# so no arch waits on another and no sysroot artifacts are passed around.
+# macOS entries build libchiaki natively with build-libchiaki.sh (brew).
+# Windows is a separate job because it needs the msys2 shell.
+#
+# The rootfs is the sysroot: clang --sysroot=<rootfs> for headers,
+# LIBCHIAKI_PREFIX=<rootfs>/opt/libchiaki, external deps located by
+# pkg-config against the rootfs (PKG_CONFIG_ALLOW_CROSS/SYSROOT_DIR/LIBDIR).
+#
+# opus: chiaki-stream is a byte pass-through, so the Rust binding is built
+# with the "opus" feature OFF. The musl C stack is built with
+# CHIAKI_LIB_ENABLE_OPUS=OFF to match; macOS/Windows reuse build-libchiaki.sh
+# unchanged (opus ON there) — the binder never references chiaki_opus_*, so
+# the linker never extracts those archive members and no libopus link is
+# needed on any platform.
+name: Build & Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # --- Linux musl (static): rootfs built in this job ---
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            musl: true
+            platform: linux/amd64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            musl: true
+            platform: linux/arm64
+          # armv7 = hard-float only: Alpine's armv7 C toolchain is ARMHF; a
+          # soft-float (musleabi) target cannot link hard-float archives.
+          # The arm64 runner runs 32-bit ARM containers natively
+          # (CONFIG_COMPAT binfmt), so no qemu setup is needed.
+          - target: armv7-unknown-linux-musleabihf
+            os: ubuntu-24.04-arm
+            musl: true
+            platform: linux/arm/v7
+
+          # --- macOS: native build-libchiaki.sh (Apple Silicon public runner) ---
+          - target: aarch64-apple-darwin
+            os: macos-14
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Set up cargo config
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p .cargo
+          cp ci/cargo-config.toml .cargo/config.toml
+
+      # --- musl: build the rootfs sysroot in this job ---
+      - name: Install libclang (bindgen)
+        if: ${{ matrix.musl == 'true' }}
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Set up Docker Buildx
+        if: ${{ matrix.musl == 'true' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build musl rootfs
+        if: ${{ matrix.musl == 'true' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ci
+          file: ci/Dockerfile.musl
+          platforms: ${{ matrix.platform }}
+          # v4+ 默认 provenance=true: 带 attestation 的构建经 type=local
+          # 导出时不完整 (local exporter 不处理 attestation manifest),
+          # 导出目录会缺 /opt/libchiaki — 本地手动 buildx build 不带
+          # provenance, 所以本地正常 CI 缺文件。
+          provenance: false
+          outputs: type=local,dest=${{ runner.temp }}/musl-rootfs
+
+      - name: Install UPX (musl)
+        if: ${{ matrix.musl == 'true' }}
+        run: sudo apt-get update && sudo apt-get install -y upx-ucl
+
+      # --- macOS: native libchiaki ---
+      - name: Checkout libchiaki
+        if: ${{ matrix.musl != 'true' }}
+        uses: actions/checkout@v7
+        with:
+          repository: nanpuyue/libchiaki
+          path: libchiaki
+
+      - name: Build libchiaki
+        if: ${{ matrix.musl != 'true' }}
+        shell: bash
+        env:
+          LIBCHIAKI_PREFIX: ${{ runner.temp }}/libchiaki-install
+        run: |
+          set -eux
+          cd libchiaki
+          # build-libchiaki.sh 原样使用 (opus 默认开启)。绑定层
+          # (chiaki-stream 关掉 opus feature) 从不引用 chiaki_opus_* 符号,
+          # 静态库惰性抽取不会拉出 opus 成员, 因此无需链接 libopus。
+          bash ./build-libchiaki.sh
+
+      - name: Build
+        shell: bash
+        run: |
+          set -eux
+          if [ "${{ matrix.musl }}" == "true" ]; then
+            # rootfs 完整性尽早暴露 (build.rs 的 panic 不指出根因)。
+            for f in opt/libchiaki/include/chiaki/common.h \
+                     opt/libchiaki/lib/libchiaki.a \
+                     usr/lib/pkgconfig; do
+              [ -e "$RUNNER_TEMP/musl-rootfs/$f" ] || {
+                echo "musl-rootfs incomplete: missing $f" >&2
+                ls -la "$RUNNER_TEMP/musl-rootfs" >&2 || true
+                exit 1
+              }
+            done
+            export LIBCHIAKI_PREFIX="$RUNNER_TEMP/musl-rootfs/opt/libchiaki"
+            export LIBCHIAKI_STATIC_LIBS=all
+            # External deps are located by pkg-config against the rootfs.
+            export PKG_CONFIG_ALLOW_CROSS=1
+            export PKG_CONFIG_SYSROOT_DIR="$RUNNER_TEMP/musl-rootfs"
+            export PKG_CONFIG_LIBDIR="$RUNNER_TEMP/musl-rootfs/usr/lib/pkgconfig"
+            # clang drives both bindgen and the cc-compiled wrapper .c files.
+            # Target triples contain '-' which the shell cannot export, so
+            # the per-target env names use '_' (cc/bindgen read both forms).
+            TRIPLE_U="$(echo '${{ matrix.target }}' | tr '-' '_')"
+            export "CC_${TRIPLE_U}=clang"
+            export "CFLAGS_${TRIPLE_U}=--target=${{ matrix.target }} --sysroot=$RUNNER_TEMP/musl-rootfs"
+            export BINDGEN_EXTRA_CLANG_ARGS="--target=${{ matrix.target }} --sysroot=$RUNNER_TEMP/musl-rootfs"
+          else
+            export LIBCHIAKI_PREFIX="$RUNNER_TEMP/libchiaki-install"
+          fi
+          cargo build --release --target "${{ matrix.target }}"
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p dist
+          BIN="target/${{ matrix.target }}/release/chiaki-stream"
+          cp "$BIN" "dist/chiaki-stream-${{ matrix.target }}"
+          # macOS macho 新版 UPX 已不支持, 只压 musl ELF。
+          if [ "${{ matrix.musl }}" == "true" ]; then
+            upx --lzma "dist/chiaki-stream-${{ matrix.target }}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: chiaki-stream-${{ matrix.target }}
+          path: dist/*
+
+  build-windows:
+    name: Build (x86_64-pc-windows-gnu)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - name: Set up cargo config
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p .cargo
+          cp ci/cargo-config.toml .cargo/config.toml
+      # MSYS2 MINGW64 shell for the whole Windows build: build-libchiaki.sh
+      # and bindgen need the mingw toolchain on PATH (the script installs
+      # its remaining packages itself; mingw clang provides libclang.dll for
+      # bindgen). path-type: inherit keeps the Windows PATH (cargo/rustc),
+      # which msys2's default "minimal" path type would drop.
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          path-type: inherit
+          install: mingw-w64-x86_64-clang upx
+      - name: Checkout libchiaki
+        uses: actions/checkout@v7
+        with:
+          repository: nanpuyue/libchiaki
+          path: libchiaki
+      - name: Build libchiaki
+        shell: msys2 {0}
+        env:
+          LIBCHIAKI_PREFIX: ${{ runner.temp }}/libchiaki-install
+        run: |
+          set -eux
+          cd libchiaki
+          # build-libchiaki.sh 原样使用 (opus 默认开启)。绑定层
+          # (chiaki-stream 关掉 opus feature) 从不引用 chiaki_opus_* 符号,
+          # 静态库惰性抽取不会拉出 opus 成员, 因此无需链接 libopus。
+          bash ./build-libchiaki.sh
+      - name: Build
+        shell: msys2 {0}
+        env:
+          LIBCHIAKI_PREFIX: ${{ runner.temp }}/libchiaki-install
+        run: |
+          set -eux
+          cargo build --release --target x86_64-pc-windows-gnu
+      - name: Package artifact
+        shell: msys2 {0}
+        run: |
+          set -eux
+          mkdir -p dist
+          cp "target/x86_64-pc-windows-gnu/release/chiaki-stream.exe" \
+             "dist/chiaki-stream-x86_64-pc-windows-gnu.exe"
+          upx --lzma "dist/chiaki-stream-x86_64-pc-windows-gnu.exe"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: chiaki-stream-x86_64-pc-windows-gnu
+          path: dist/*
+
+  release:
+    name: Release
+    needs: [build, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+      - name: Flatten artifacts
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p upload
+          find dist -type f -exec cp {} upload/ \;
+      - name: Create and update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -eux
+          TAG="${{ github.ref_name }}"
+          gh release create "$TAG" --draft --prerelease || true
+          gh release upload "$TAG" upload/* --clobber

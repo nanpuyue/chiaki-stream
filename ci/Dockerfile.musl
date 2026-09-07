@@ -1,0 +1,136 @@
+# syntax=docker/dockerfile:1.4
+
+# Builds the static musl C stack (libchiaki + deps) for one target platform.
+# The build stage compiles natively for the requested --platform:
+#
+#   docker buildx build --platform linux/amd64  -o dist/amd64 ci
+#   docker buildx build --platform linux/arm64  -o dist/arm64 ci
+#   docker buildx build --platform linux/arm/v7 -o dist/armv7 ci
+#
+# The rootfs itself is the sysroot (clang --sysroot=<rootfs> for headers;
+# LIBCHIAKI_PREFIX=<rootfs>/opt/libchiaki). External deps are located by
+# pkg-config against the rootfs (PKG_CONFIG_SYSROOT_DIR/LIBDIR point at it,
+# .pc files live in /usr/lib/pkgconfig), so no dep list is maintained here.
+# Only the chiaki stack itself goes into /opt/libchiaki, plus libgcc.a:
+# aarch64 prebuilt apk archives (json-c) reference outline-atomics helper
+# symbols (__aarch64_cas4_sync & co) that live in libgcc, and libgcc has no
+# .pc file to locate it via pkg-config.
+# musl crt objects and libc.a are not needed: rustup's rust-std ships its
+# own self-contained set.
+#
+# chiaki-stream links the binding with the opus feature off, so the C stack
+# is built with CHIAKI_LIB_ENABLE_OPUS=OFF and drops libopus from the
+# closure. The curl feature set is pinned to what chiaki's HTTP/1.1 +
+# WebSocket use actually needs (see libchiaki README, "C library build
+# requirements").
+#
+# chiaki-ng is cloned here (CI has direct github access; the local-testing
+# variant in .local-ctx injects it via a named libchiaki-src context).
+FROM alpine:3.22 AS build
+ARG CHIAKI_VERSION=v1.10.0
+
+RUN <<EOF
+set -e
+# json-c / miniupnpc ship .a in their -dev package; openssl, libevent and z
+# need their -static subpackage. linux-headers provides <linux/auxvec.h>
+# (gf-complete, needed on arm64).
+apk add --no-cache \
+    build-base cmake ninja pkgconf git sed patch linux-headers \
+    python3 py3-protobuf protobuf \
+    openssl-dev openssl-libs-static \
+    json-c-dev libevent-dev libevent-static \
+    miniupnpc-dev zlib-dev zlib-static
+EOF
+
+WORKDIR /build
+RUN <<EOF
+set -e
+git clone --quiet https://github.com/streetpea/chiaki-ng.git /build/chiaki-ng
+git -C /build/chiaki-ng checkout --quiet "$CHIAKI_VERSION"
+git -C /build/chiaki-ng submodule --quiet update --init \
+    third-party/nanopb third-party/jerasure third-party/gf-complete \
+    third-party/curl
+EOF
+COPY thread-clockjoin-musl.patch /build/thread-clockjoin-musl.patch
+RUN <<EOF
+set -e
+# chiaki-ng v1.10.0 calls glibc-only pthread_clockjoin_np; musl has only
+# pthread_timedjoin_np (see thread-clockjoin-musl.patch for the hunk).
+patch -d /build/chiaki-ng -p1 < /build/thread-clockjoin-musl.patch
+EOF
+
+RUN <<EOF
+set -e
+CFLAGS="-ffunction-sections -fdata-sections -DMINIUPNP_STATICLIB"
+export CFLAGS
+# chiaki stack (chiaki-ng has no install rules): headers for bindgen under
+# include/, archives under lib/. External deps are not copied — they stay in
+# the rootfs /usr and are located by pkg-config (PKG_CONFIG_SYSROOT_DIR);
+# libgcc.a covers aarch64 outline-atomics helper references everywhere.
+cmake -S chiaki-ng -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCHIAKI_ENABLE_GUI=OFF \
+    -DCHIAKI_ENABLE_CLI=OFF \
+    -DCHIAKI_ENABLE_TESTS=OFF \
+    -DCHIAKI_ENABLE_SETSU=OFF \
+    -DCHIAKI_ENABLE_STEAMDECK_NATIVE=OFF \
+    -DCHIAKI_ENABLE_STEAM_SHORTCUT=OFF \
+    -DCHIAKI_ENABLE_SPEEX=OFF \
+    -DCHIAKI_ENABLE_FFMPEG_DECODER=OFF \
+    -DCHIAKI_LIB_ENABLE_OPUS=OFF \
+    -DUSE_NGHTTP2=OFF -DCURL_USE_LIBSSH2=OFF \
+    -DUSE_LIBIDN2=OFF -DCURL_USE_LIBPSL=OFF \
+    -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF -DUSE_LIBRTMP=OFF \
+    -DCURL_USE_GSSAPI=OFF -DCURL_USE_LIBSSH=OFF
+cmake --build build --target chiaki-lib -j "$(nproc)"
+EOF
+
+RUN <<EOF
+set -e
+# chiaki stack only (chiaki-ng has no install rules): headers for bindgen
+# under include/, archives under lib/. External deps are not copied — they
+# stay in the rootfs /usr and are located by pkg-config (PKG_CONFIG_SYSROOT_DIR).
+mkdir -p /opt/libchiaki/lib /opt/libchiaki/include
+cp build/lib/libchiaki.a \
+   build/third-party/curl/lib/libcurl.a \
+   build/third-party/libgf_complete.a \
+   build/third-party/libjerasure.a \
+   build/third-party/nanopb/libprotobuf-nanopb.a \
+   /opt/libchiaki/lib/
+rm -rf /opt/libchiaki/include/chiaki
+cp -r chiaki-ng/lib/include/chiaki /opt/libchiaki/include/chiaki
+rm -f /opt/libchiaki/include/chiaki/ffmpegdecoder.h \
+      /opt/libchiaki/include/chiaki/pidecoder.h
+cp build/lib/include/chiaki/config.h /opt/libchiaki/include/chiaki/config.h
+cp build/lib/protobuf/takion.pb.h /opt/libchiaki/include/chiaki/takion.pb.h
+# takion.pb.h does `#include <pb.h>`.
+cp chiaki-ng/third-party/nanopb/pb.h \
+   chiaki-ng/third-party/nanopb/pb_common.h \
+   chiaki-ng/third-party/nanopb/pb_decode.h \
+   chiaki-ng/third-party/nanopb/pb_encode.h \
+   /opt/libchiaki/include/
+# libgcc.a into the closure: aarch64 prebuilt apk archives (json-c) emit
+# outline-atomics helper references (__aarch64_cas4_sync & co); libgcc is
+# the only provider, it has no .pc file and no .pc lists -lgcc, so it cannot
+# be reached via pkg-config — copy (symlinks break across rootfs unpack).
+cp "$(gcc -print-libgcc-file-name)" /opt/libchiaki/lib/libgcc.a
+EOF
+
+RUN <<EOF
+set -e
+# Strip the build artefacts; keep the toolchain.
+rm -rf /build /var/cache/apk/*
+EOF
+
+RUN <<EOF
+set -e
+for f in libchiaki.a libcurl.a libgf_complete.a libjerasure.a \
+         libprotobuf-nanopb.a libgcc.a; do
+    [ -s "/opt/libchiaki/lib/$f" ] || { echo "missing: /opt/libchiaki/lib/$f" >&2; exit 1; }
+done
+for f in include/chiaki/common.h include/chiaki/session.h \
+         include/chiaki/config.h include/chiaki/takion.pb.h \
+         include/pb.h; do
+    [ -s "/opt/libchiaki/$f" ] || { echo "missing: /opt/libchiaki/$f" >&2; exit 1; }
+done
+ls -1 /opt/libchiaki/lib/libchiaki.a /opt/libchiaki/lib/libgcc.a
+EOF

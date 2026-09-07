@@ -7,7 +7,7 @@ authors = ["南浦月 <nanpuyue@gmail.com>"]
 license = "AGPL-3.0"
 
 [dependencies]
-libchiaki = { path = "../libchiaki" }
+libchiaki = { git = "https://github.com/nanpuyue/libchiaki", default-features = false }
 clap = { version = "4", features = ["derive"] }
 mpeg2ts = "0.6"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
