@@ -39,13 +39,15 @@ jobs:
     name: Fetch chiaki-ng
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-
+      # 本 job 与 chiaki-stream 仓库无关: 只 clone 外部 chiaki-ng 源码,
+      # 不需要 actions/checkout (工作区由 runner 预建, 为空)。
+      # 源码放在 upload/chiaki-ng: 上传父目录 upload,
+      # upload-artifact 剥掉其目录名后 zip 顶层正好是 chiaki-ng/。
       - name: Cache chiaki-ng
         id: cache-chiaki-ng
         uses: actions/cache@v6
         with:
-          path: ${{ runner.temp }}/chiaki-ng
+          path: upload
           key: chiaki-ng-${{ env.CHIAKI_VERSION }}
 
       - name: Fetch chiaki-ng
@@ -53,14 +55,11 @@ jobs:
         shell: bash
         run: |
           set -eux
-          SRC="${{ runner.temp }}/chiaki-ng"
-          # tag / 分支 / commit hash 均可: clone 默认分支后 fetch 指定
-          # ref 再检出 (--branch 不接受 hash)。submodule 按该 commit 的
-          # gitlink 精确检出。
-          git clone --quiet --depth 1 https://github.com/streetpea/chiaki-ng.git "$SRC"
-          git -C "$SRC" fetch --quiet --depth 1 origin "${{ env.CHIAKI_VERSION }}"
-          git -C "$SRC" checkout --quiet FETCH_HEAD
-          git -C "$SRC" submodule update --init --depth 1 \
+          mkdir -p upload
+          git clone --quiet --depth 1 https://github.com/streetpea/chiaki-ng.git upload/chiaki-ng
+          git -C upload/chiaki-ng fetch --quiet --depth 1 origin "${{ env.CHIAKI_VERSION }}"
+          git -C upload/chiaki-ng checkout --quiet FETCH_HEAD
+          git -C upload/chiaki-ng submodule update --init --depth 1 \
             third-party/nanopb third-party/jerasure third-party/gf-complete \
             third-party/curl
 
@@ -68,7 +67,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: chiaki-ng-${{ env.CHIAKI_VERSION }}
-          path: ${{ runner.temp }}/chiaki-ng
+          path: upload
           if-no-files-found: error
           retention-days: 1
 
