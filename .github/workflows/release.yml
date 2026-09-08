@@ -230,6 +230,7 @@ jobs:
         env:
           LIBCHIAKI_PREFIX: ${{ runner.temp }}/libchiaki-install
           CHIAKI_SRC_DIR: ${{ runner.temp }}/chiaki-ng
+          CHIAKI_SKIP_CLONE: 1
         run: |
           set -eux
           cd libchiaki
@@ -304,6 +305,7 @@ jobs:
         env:
           LIBCHIAKI_PREFIX: ${{ runner.temp }}/libchiaki-install
           CHIAKI_SRC_DIR: ${{ runner.temp }}/chiaki-ng
+          CHIAKI_SKIP_CLONE: 1
         run: |
           set -eux
           cd libchiaki
