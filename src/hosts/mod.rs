@@ -13,6 +13,10 @@
 //! ([`collect_hosts`]) 都是平台无关的通用逻辑。
 //! IP 通过 `manual_hosts[].registered_mac == registered_hosts[].server_mac` 关联出来。
 
+// 通用逻辑目前只有 Windows/macOS 平台模块消费; Linux 接入前这些符号
+// 无使用者 (dead_code), 统一放行, 后续平台扩展时自然解除。
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
