@@ -73,15 +73,23 @@ jobs:
 
       # --- musl: build the rootfs sysroot in this job ---
       - name: Install libclang (bindgen)
-        if: ${{ matrix.musl == 'true' }}
+        if: ${{ matrix.musl }}
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Set up Docker Buildx
-        if: ${{ matrix.musl == 'true' }}
+        if: ${{ matrix.musl }}
         uses: docker/setup-buildx-action@v3
 
+      - name: Cache musl rootfs
+        id: cache-musl-rootfs
+        if: ${{ matrix.musl }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/musl-rootfs
+          key: musl-rootfs-${{ matrix.target }}-${{ hashFiles('ci/Dockerfile.musl', 'ci/thread-clockjoin-musl.patch') }}
+
       - name: Build musl rootfs
-        if: ${{ matrix.musl == 'true' }}
+        if: ${{ matrix.musl && steps.cache-musl-rootfs.outputs.cache-hit != 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: ci
@@ -92,22 +100,24 @@ jobs:
           # 导出目录会缺 /opt/libchiaki — 本地手动 buildx build 不带
           # provenance, 所以本地正常 CI 缺文件。
           provenance: false
+          cache-from: type=gha,scope=musl-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=musl-${{ matrix.target }}
           outputs: type=local,dest=${{ runner.temp }}/musl-rootfs
 
       - name: Install UPX (musl)
-        if: ${{ matrix.musl == 'true' }}
+        if: ${{ matrix.musl }}
         run: sudo apt-get update && sudo apt-get install -y upx-ucl
 
       # --- macOS: native libchiaki ---
       - name: Checkout libchiaki
-        if: ${{ matrix.musl != 'true' }}
+        if: ${{ !matrix.musl }}
         uses: actions/checkout@v7
         with:
           repository: nanpuyue/libchiaki
           path: libchiaki
 
       - name: Build libchiaki
-        if: ${{ matrix.musl != 'true' }}
+        if: ${{ !matrix.musl }}
         shell: bash
         env:
           LIBCHIAKI_PREFIX: ${{ runner.temp }}/libchiaki-install
