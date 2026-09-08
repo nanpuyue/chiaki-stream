@@ -33,11 +33,51 @@ permissions:
   contents: write
 
 jobs:
+  # chiaki-ng 源码获取只做一次 (含子模块), 打包上传; 所有构建 job
+  # 下载共享。跨 run 复用由本 job 内的 cache 承担, 命中则跳过 clone。
+  fetch-chiaki-ng:
+    name: Fetch chiaki-ng
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache chiaki-ng
+        id: cache-chiaki-ng
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/chiaki-ng
+          key: chiaki-ng-${{ env.CHIAKI_VERSION }}
+
+      - name: Fetch chiaki-ng
+        if: ${{ steps.cache-chiaki-ng.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: |
+          set -eux
+          SRC="${{ runner.temp }}/chiaki-ng"
+          # tag / 分支 / commit hash 均可: clone 默认分支后 fetch 指定
+          # ref 再检出 (--branch 不接受 hash)。submodule 按该 commit 的
+          # gitlink 精确检出。
+          git clone --quiet --depth 1 https://github.com/streetpea/chiaki-ng.git "$SRC"
+          git -C "$SRC" fetch --quiet --depth 1 origin "${{ env.CHIAKI_VERSION }}"
+          git -C "$SRC" checkout --quiet FETCH_HEAD
+          git -C "$SRC" submodule update --init --depth 1 \
+            third-party/nanopb third-party/jerasure third-party/gf-complete \
+            third-party/curl
+
+      - name: Upload chiaki-ng source
+        uses: actions/upload-artifact@v7
+        with:
+          name: chiaki-ng-${{ env.CHIAKI_VERSION }}
+          path: ${{ runner.temp }}/chiaki-ng
+          if-no-files-found: error
+          retention-days: 1
+
   # musl 与 macOS 拆成两个 job: 各自只含自己的步骤, 没有 skipped。
   # musl 每个架构在 job 内先构建自己的 rootfs sysroot (docker buildx ->
   # ci/Dockerfile.musl) 再立即交叉编译, 架构间并行, 互不等待。
   build-musl:
-    name: Build musl (${{ matrix.target }})
+    name: Build (${{ matrix.target }})
+    needs: fetch-chiaki-ng
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -60,34 +100,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # chiaki-ng 源码 (含子模块) 所有平台共用一份缓存: 第一个 miss 的
-      # job 拉取并保存, 其余直接恢复, 不再每次构建时于 Dockerfile /
-      # build-libchiaki.sh 内重新 clone。目录固定 chiaki-ng, 版本只体现在 key。
-      - name: Cache chiaki-ng
-        id: cache-chiaki-ng
-        uses: actions/cache@v6
+      - name: Download chiaki-ng
+        uses: actions/download-artifact@v8
         with:
-          path: ${{ runner.temp }}/chiaki-ng
-          key: chiaki-ng-${{ env.CHIAKI_VERSION }}
-
-      - name: Fetch chiaki-ng
-        if: ${{ steps.cache-chiaki-ng.outputs.cache-hit != 'true' }}
-        shell: bash
-        run: |
-          set -eux
-          SRC="${{ runner.temp }}/chiaki-ng"
-          if command -v cygpath >/dev/null 2>&1; then
-            SRC="$(cygpath -u "$SRC")"
-          fi
-          # tag / 分支 / commit hash 均可: clone 默认分支后 fetch 指定
-          # ref 再检出 (--branch 不接受 hash)。submodule 按该 commit 的
-          # gitlink 精确检出。
-          git clone --quiet --depth 1 https://github.com/streetpea/chiaki-ng.git "$SRC"
-          git -C "$SRC" fetch --quiet --depth 1 origin "${{ env.CHIAKI_VERSION }}"
-          git -C "$SRC" checkout --quiet FETCH_HEAD
-          git -C "$SRC" submodule update --init --depth 1 \
-            third-party/nanopb third-party/jerasure third-party/gf-complete \
-            third-party/curl
+          name: chiaki-ng-${{ env.CHIAKI_VERSION }}
+          path: ${{ runner.temp }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -182,32 +199,16 @@ jobs:
   # build-libchiaki.sh 原样使用 (opus 默认开启)。
   build-macos:
     name: Build (aarch64-apple-darwin)
+    needs: fetch-chiaki-ng
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
 
-      - name: Cache chiaki-ng
-        id: cache-chiaki-ng
-        uses: actions/cache@v6
+      - name: Download chiaki-ng
+        uses: actions/download-artifact@v8
         with:
-          path: ${{ runner.temp }}/chiaki-ng
-          key: chiaki-ng-${{ env.CHIAKI_VERSION }}
-
-      - name: Fetch chiaki-ng
-        if: ${{ steps.cache-chiaki-ng.outputs.cache-hit != 'true' }}
-        shell: bash
-        run: |
-          set -eux
-          SRC="${{ runner.temp }}/chiaki-ng"
-          if command -v cygpath >/dev/null 2>&1; then
-            SRC="$(cygpath -u "$SRC")"
-          fi
-          git clone --quiet --depth 1 https://github.com/streetpea/chiaki-ng.git "$SRC"
-          git -C "$SRC" fetch --quiet --depth 1 origin "${{ env.CHIAKI_VERSION }}"
-          git -C "$SRC" checkout --quiet FETCH_HEAD
-          git -C "$SRC" submodule update --init --depth 1 \
-            third-party/nanopb third-party/jerasure third-party/gf-complete \
-            third-party/curl
+          name: chiaki-ng-${{ env.CHIAKI_VERSION }}
+          path: ${{ runner.temp }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -263,32 +264,16 @@ jobs:
 
   build-windows:
     name: Build (x86_64-pc-windows-gnu)
+    needs: fetch-chiaki-ng
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Cache chiaki-ng
-        id: cache-chiaki-ng
-        uses: actions/cache@v6
+      - name: Download chiaki-ng
+        uses: actions/download-artifact@v8
         with:
-          path: ${{ runner.temp }}/chiaki-ng
-          key: chiaki-ng-${{ env.CHIAKI_VERSION }}
-
-      - name: Fetch chiaki-ng
-        if: ${{ steps.cache-chiaki-ng.outputs.cache-hit != 'true' }}
-        shell: bash
-        run: |
-          set -eux
-          SRC="${{ runner.temp }}/chiaki-ng"
-          if command -v cygpath >/dev/null 2>&1; then
-            SRC="$(cygpath -u "$SRC")"
-          fi
-          git clone --quiet --depth 1 https://github.com/streetpea/chiaki-ng.git "$SRC"
-          git -C "$SRC" fetch --quiet --depth 1 origin "${{ env.CHIAKI_VERSION }}"
-          git -C "$SRC" checkout --quiet FETCH_HEAD
-          git -C "$SRC" submodule update --init --depth 1 \
-            third-party/nanopb third-party/jerasure third-party/gf-complete \
-            third-party/curl
+          name: chiaki-ng-${{ env.CHIAKI_VERSION }}
+          path: ${{ runner.temp }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
