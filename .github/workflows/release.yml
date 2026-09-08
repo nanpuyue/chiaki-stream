@@ -275,6 +275,9 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: dist
+          # buildx 的 gha cache 会以 *.dockerbuild artifact 形式上传,
+          # 全量下载会把缓存包也拉进来 (大且校验失败), 只取产物。
+          pattern: chiaki-stream-*
       - name: Flatten artifacts
         shell: bash
         run: |
