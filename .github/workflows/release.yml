@@ -3,10 +3,11 @@
 #   - macOS: aarch64
 #   - Windows: x86_64 GNU
 #
-# One build matrix: each musl entry builds ITS OWN rootfs sysroot inside the
-# job (docker buildx -> ci/Dockerfile.musl) and cross-compiles right after,
-# so no arch waits on another and no sysroot artifacts are passed around.
-# macOS entries build libchiaki natively with build-libchiaki.sh (brew).
+# musl and macOS are separate jobs so neither shows the other's steps:
+# build-musl matrix entries each build their own rootfs sysroot
+# (docker buildx -> ci/Dockerfile.musl) then cross-compile right after —
+# no arch waits on another, no sysroot artifacts are passed around.
+# build-macos builds libchiaki natively with build-libchiaki.sh (brew).
 # Windows is a separate job because it needs the msys2 shell.
 #
 # The rootfs is the sysroot: clang --sysroot=<rootfs> for headers,
@@ -28,21 +29,21 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build (${{ matrix.target }})
+  # musl 与 macOS 拆成两个 job: 各自只含自己的步骤, 没有 skipped。
+  # musl 每个架构在 job 内先构建自己的 rootfs sysroot (docker buildx ->
+  # ci/Dockerfile.musl) 再立即交叉编译, 架构间并行, 互不等待。
+  build-musl:
+    name: Build musl (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # --- Linux musl (static): rootfs built in this job ---
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            musl: true
             platform: linux/amd64
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
-            musl: true
             platform: linux/arm64
           # armv7 = hard-float only: Alpine's armv7 C toolchain is ARMHF; a
           # soft-float (musleabi) target cannot link hard-float archives.
@@ -50,12 +51,7 @@ jobs:
           # (CONFIG_COMPAT binfmt), so no qemu setup is needed.
           - target: armv7-unknown-linux-musleabihf
             os: ubuntu-24.04-arm
-            musl: true
             platform: linux/arm/v7
-
-          # --- macOS: native build-libchiaki.sh (Apple Silicon public runner) ---
-          - target: aarch64-apple-darwin
-            os: macos-14
 
     steps:
       - uses: actions/checkout@v7
@@ -71,26 +67,22 @@ jobs:
           mkdir -p .cargo
           cp ci/cargo-config.toml .cargo/config.toml
 
-      # --- musl: build the rootfs sysroot in this job ---
       - name: Install libclang (bindgen)
-        if: ${{ matrix.musl }}
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Set up Docker Buildx
-        if: ${{ matrix.musl }}
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Cache musl rootfs
         id: cache-musl-rootfs
-        if: ${{ matrix.musl }}
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/musl-rootfs
           key: musl-rootfs-${{ matrix.target }}-${{ hashFiles('ci/Dockerfile.musl', 'ci/thread-clockjoin-musl.patch') }}
 
       - name: Build musl rootfs
-        if: ${{ matrix.musl && steps.cache-musl-rootfs.outputs.cache-hit != 'true' }}
-        uses: docker/build-push-action@v6
+        if: ${{ steps.cache-musl-rootfs.outputs.cache-hit != 'true' }}
+        uses: docker/build-push-action@v7
         with:
           context: ci
           file: ci/Dockerfile.musl
@@ -105,19 +97,78 @@ jobs:
           outputs: type=local,dest=${{ runner.temp }}/musl-rootfs
 
       - name: Install UPX (musl)
-        if: ${{ matrix.musl }}
         run: sudo apt-get update && sudo apt-get install -y upx-ucl
 
-      # --- macOS: native libchiaki ---
+      - name: Build
+        shell: bash
+        run: |
+          set -eux
+          # rootfs 完整性尽早暴露 (build.rs 的 panic 不指出根因)。
+          for f in opt/libchiaki/include/chiaki/common.h \
+                   opt/libchiaki/lib/libchiaki.a \
+                   usr/lib/pkgconfig; do
+            [ -e "$RUNNER_TEMP/musl-rootfs/$f" ] || {
+              echo "musl-rootfs incomplete: missing $f" >&2
+              ls -la "$RUNNER_TEMP/musl-rootfs" >&2 || true
+              exit 1
+            }
+          done
+          export LIBCHIAKI_PREFIX="$RUNNER_TEMP/musl-rootfs/opt/libchiaki"
+          export LIBCHIAKI_STATIC_LIBS=all
+          # External deps are located by pkg-config against the rootfs.
+          export PKG_CONFIG_ALLOW_CROSS=1
+          export PKG_CONFIG_SYSROOT_DIR="$RUNNER_TEMP/musl-rootfs"
+          export PKG_CONFIG_LIBDIR="$RUNNER_TEMP/musl-rootfs/usr/lib/pkgconfig"
+          # clang drives both bindgen and the cc-compiled wrapper .c files.
+          # Target triples contain '-' which the shell cannot export, so
+          # the per-target env names use '_' (cc/bindgen read both forms).
+          TRIPLE_U="$(echo '${{ matrix.target }}' | tr '-' '_')"
+          export "CC_${TRIPLE_U}=clang"
+          export "CFLAGS_${TRIPLE_U}=--target=${{ matrix.target }} --sysroot=$RUNNER_TEMP/musl-rootfs"
+          export BINDGEN_EXTRA_CLANG_ARGS="--target=${{ matrix.target }} --sysroot=$RUNNER_TEMP/musl-rootfs"
+          cargo build --release --target "${{ matrix.target }}"
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p dist
+          BIN="target/${{ matrix.target }}/release/chiaki-stream"
+          cp "$BIN" "dist/chiaki-stream-${{ matrix.target }}"
+          upx --lzma "dist/chiaki-stream-${{ matrix.target }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: chiaki-stream-${{ matrix.target }}
+          path: dist/*
+
+  # macOS: native build-libchiaki.sh (Apple Silicon public runner),
+  # build-libchiaki.sh 原样使用 (opus 默认开启)。
+  build-macos:
+    name: Build (aarch64-apple-darwin)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Set up cargo config
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p .cargo
+          cp ci/cargo-config.toml .cargo/config.toml
+
       - name: Checkout libchiaki
-        if: ${{ !matrix.musl }}
         uses: actions/checkout@v7
         with:
           repository: nanpuyue/libchiaki
           path: libchiaki
 
       - name: Build libchiaki
-        if: ${{ !matrix.musl }}
         shell: bash
         env:
           LIBCHIAKI_PREFIX: ${{ runner.temp }}/libchiaki-install
@@ -133,51 +184,22 @@ jobs:
         shell: bash
         run: |
           set -eux
-          if [ "${{ matrix.musl }}" == "true" ]; then
-            # rootfs 完整性尽早暴露 (build.rs 的 panic 不指出根因)。
-            for f in opt/libchiaki/include/chiaki/common.h \
-                     opt/libchiaki/lib/libchiaki.a \
-                     usr/lib/pkgconfig; do
-              [ -e "$RUNNER_TEMP/musl-rootfs/$f" ] || {
-                echo "musl-rootfs incomplete: missing $f" >&2
-                ls -la "$RUNNER_TEMP/musl-rootfs" >&2 || true
-                exit 1
-              }
-            done
-            export LIBCHIAKI_PREFIX="$RUNNER_TEMP/musl-rootfs/opt/libchiaki"
-            export LIBCHIAKI_STATIC_LIBS=all
-            # External deps are located by pkg-config against the rootfs.
-            export PKG_CONFIG_ALLOW_CROSS=1
-            export PKG_CONFIG_SYSROOT_DIR="$RUNNER_TEMP/musl-rootfs"
-            export PKG_CONFIG_LIBDIR="$RUNNER_TEMP/musl-rootfs/usr/lib/pkgconfig"
-            # clang drives both bindgen and the cc-compiled wrapper .c files.
-            # Target triples contain '-' which the shell cannot export, so
-            # the per-target env names use '_' (cc/bindgen read both forms).
-            TRIPLE_U="$(echo '${{ matrix.target }}' | tr '-' '_')"
-            export "CC_${TRIPLE_U}=clang"
-            export "CFLAGS_${TRIPLE_U}=--target=${{ matrix.target }} --sysroot=$RUNNER_TEMP/musl-rootfs"
-            export BINDGEN_EXTRA_CLANG_ARGS="--target=${{ matrix.target }} --sysroot=$RUNNER_TEMP/musl-rootfs"
-          else
-            export LIBCHIAKI_PREFIX="$RUNNER_TEMP/libchiaki-install"
-          fi
-          cargo build --release --target "${{ matrix.target }}"
+          export LIBCHIAKI_PREFIX="$RUNNER_TEMP/libchiaki-install"
+          # macOS macho 新版 UPX 已不支持, 不压。
+          cargo build --release --target aarch64-apple-darwin
 
       - name: Package artifact
         shell: bash
         run: |
           set -eux
           mkdir -p dist
-          BIN="target/${{ matrix.target }}/release/chiaki-stream"
-          cp "$BIN" "dist/chiaki-stream-${{ matrix.target }}"
-          # macOS macho 新版 UPX 已不支持, 只压 musl ELF。
-          if [ "${{ matrix.musl }}" == "true" ]; then
-            upx --lzma "dist/chiaki-stream-${{ matrix.target }}"
-          fi
+          cp "target/aarch64-apple-darwin/release/chiaki-stream" \
+             "dist/chiaki-stream-aarch64-apple-darwin"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: chiaki-stream-${{ matrix.target }}
+          name: chiaki-stream-aarch64-apple-darwin
           path: dist/*
 
   build-windows:
@@ -245,7 +267,7 @@ jobs:
 
   release:
     name: Release
-    needs: [build, build-windows]
+    needs: [build-musl, build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
