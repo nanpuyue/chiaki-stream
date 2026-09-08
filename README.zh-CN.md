@@ -35,8 +35,8 @@ Commands:
   wakeup   从待机唤醒主机
   list     列出 chiaki-ng 已注册的主机（仅 Windows/macOS）
 
-Global:
-  -l, --log-level <LEVEL>   off|error|warning|info|verbose|debug（默认 warning）
+选项（必须放在子命令前；非全局）：
+  --log-level <LEVEL>   off|error|warning|info|verbose|debug（默认 warning）
 ```
 
 日志一律走 stderr。以 stdout 输出时，stdout 只承载 TS 数据。

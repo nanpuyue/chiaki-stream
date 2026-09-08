@@ -35,8 +35,8 @@ Commands:
   wakeup   Wake a console in standby
   list     List hosts registered in chiaki-ng (Windows/macOS)
 
-Global:
-  -l, --log-level <LEVEL>   off|error|warning|info|verbose|debug (default: warning)
+Options (must come before the subcommand; not global):
+  --log-level <LEVEL>   off|error|warning|info|verbose|debug (default: warning)
 ```
 
 All logs go to stderr. When streaming to stdout, stdout carries TS data only.
