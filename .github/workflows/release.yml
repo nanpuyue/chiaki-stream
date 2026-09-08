@@ -117,11 +117,8 @@ jobs:
           mkdir -p .cargo
           cp ci/cargo-config.toml .cargo/config.toml
 
-      - name: Install libclang (bindgen)
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Install libclang and UPX
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev upx-ucl
 
       - name: Cache musl rootfs
         id: cache-musl-rootfs
@@ -129,6 +126,11 @@ jobs:
         with:
           path: ${{ runner.temp }}/musl-rootfs
           key: musl-rootfs-${{ matrix.target }}-${{ hashFiles('ci/Dockerfile.musl', 'ci/thread-clockjoin-musl.patch') }}
+
+      # 只有 rootfs cache miss 才需要 Docker 构建, 命中时跳过。
+      - name: Set up Docker Buildx
+        if: ${{ steps.cache-musl-rootfs.outputs.cache-hit != 'true' }}
+        uses: docker/setup-buildx-action@v4
 
       - name: Build musl rootfs
         if: ${{ steps.cache-musl-rootfs.outputs.cache-hit != 'true' }}
@@ -147,9 +149,6 @@ jobs:
           cache-from: type=gha,scope=musl-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=musl-${{ matrix.target }}
           outputs: type=local,dest=${{ runner.temp }}/musl-rootfs
-
-      - name: Install UPX (musl)
-        run: sudo apt-get update && sudo apt-get install -y upx-ucl
 
       - name: Build
         shell: bash
