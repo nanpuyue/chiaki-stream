@@ -327,7 +327,8 @@ jobs:
           mkdir -p dist
           cp "target/x86_64-pc-windows-gnu/release/chiaki-stream.exe" \
              "dist/chiaki-stream-x86_64-pc-windows-gnu.exe"
-          upx --lzma "dist/chiaki-stream-x86_64-pc-windows-gnu.exe"
+          # 暂时注释掉 UPX 压缩: 压缩后的 exe 可能被杀毒软件误报。
+          # upx --lzma "dist/chiaki-stream-x86_64-pc-windows-gnu.exe"
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
