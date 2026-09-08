@@ -25,6 +25,10 @@ name: Build & Release
 on:
   workflow_dispatch:
 
+env:
+  # tag (v1.10.0) / 分支名 / commit hash 均可, git fetch 直接使用。
+  CHIAKI_VERSION: v1.10.0
+
 permissions:
   contents: write
 
@@ -55,6 +59,35 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      # chiaki-ng 源码 (含子模块) 所有平台共用一份缓存: 第一个 miss 的
+      # job 拉取并保存, 其余直接恢复, 不再每次构建时于 Dockerfile /
+      # build-libchiaki.sh 内重新 clone。目录固定 chiaki-ng, 版本只体现在 key。
+      - name: Cache chiaki-ng
+        id: cache-chiaki-ng
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/chiaki-ng
+          key: chiaki-ng-${{ env.CHIAKI_VERSION }}
+
+      - name: Fetch chiaki-ng
+        if: ${{ steps.cache-chiaki-ng.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: |
+          set -eux
+          SRC="${{ runner.temp }}/chiaki-ng"
+          if command -v cygpath >/dev/null 2>&1; then
+            SRC="$(cygpath -u "$SRC")"
+          fi
+          # tag / 分支 / commit hash 均可: clone 默认分支后 fetch 指定
+          # ref 再检出 (--branch 不接受 hash)。submodule 按该 commit 的
+          # gitlink 精确检出。
+          git clone --quiet --depth 1 https://github.com/streetpea/chiaki-ng.git "$SRC"
+          git -C "$SRC" fetch --quiet --depth 1 origin "${{ env.CHIAKI_VERSION }}"
+          git -C "$SRC" checkout --quiet FETCH_HEAD
+          git -C "$SRC" submodule update --init --depth 1 \
+            third-party/nanopb third-party/jerasure third-party/gf-complete \
+            third-party/curl
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -87,6 +120,8 @@ jobs:
           context: ci
           file: ci/Dockerfile.musl
           platforms: ${{ matrix.platform }}
+          build-contexts: |
+            chiaki-ng=${{ runner.temp }}/chiaki-ng
           # v4+ 默认 provenance=true: 带 attestation 的构建经 type=local
           # 导出时不完整 (local exporter 不处理 attestation manifest),
           # 导出目录会缺 /opt/libchiaki — 本地手动 buildx build 不带
@@ -151,6 +186,29 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Cache chiaki-ng
+        id: cache-chiaki-ng
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/chiaki-ng
+          key: chiaki-ng-${{ env.CHIAKI_VERSION }}
+
+      - name: Fetch chiaki-ng
+        if: ${{ steps.cache-chiaki-ng.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: |
+          set -eux
+          SRC="${{ runner.temp }}/chiaki-ng"
+          if command -v cygpath >/dev/null 2>&1; then
+            SRC="$(cygpath -u "$SRC")"
+          fi
+          git clone --quiet --depth 1 https://github.com/streetpea/chiaki-ng.git "$SRC"
+          git -C "$SRC" fetch --quiet --depth 1 origin "${{ env.CHIAKI_VERSION }}"
+          git -C "$SRC" checkout --quiet FETCH_HEAD
+          git -C "$SRC" submodule update --init --depth 1 \
+            third-party/nanopb third-party/jerasure third-party/gf-complete \
+            third-party/curl
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
@@ -172,6 +230,7 @@ jobs:
         shell: bash
         env:
           LIBCHIAKI_PREFIX: ${{ runner.temp }}/libchiaki-install
+          CHIAKI_SRC_DIR: ${{ runner.temp }}/chiaki-ng
         run: |
           set -eux
           cd libchiaki
@@ -207,6 +266,30 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+
+      - name: Cache chiaki-ng
+        id: cache-chiaki-ng
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/chiaki-ng
+          key: chiaki-ng-${{ env.CHIAKI_VERSION }}
+
+      - name: Fetch chiaki-ng
+        if: ${{ steps.cache-chiaki-ng.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: |
+          set -eux
+          SRC="${{ runner.temp }}/chiaki-ng"
+          if command -v cygpath >/dev/null 2>&1; then
+            SRC="$(cygpath -u "$SRC")"
+          fi
+          git clone --quiet --depth 1 https://github.com/streetpea/chiaki-ng.git "$SRC"
+          git -C "$SRC" fetch --quiet --depth 1 origin "${{ env.CHIAKI_VERSION }}"
+          git -C "$SRC" checkout --quiet FETCH_HEAD
+          git -C "$SRC" submodule update --init --depth 1 \
+            third-party/nanopb third-party/jerasure third-party/gf-complete \
+            third-party/curl
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu
@@ -237,6 +320,7 @@ jobs:
         shell: msys2 {0}
         env:
           LIBCHIAKI_PREFIX: ${{ runner.temp }}/libchiaki-install
+          CHIAKI_SRC_DIR: ${{ runner.temp }}/chiaki-ng
         run: |
           set -eux
           cd libchiaki

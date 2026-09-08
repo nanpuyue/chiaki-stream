@@ -24,10 +24,10 @@
 # WebSocket use actually needs (see libchiaki README, "C library build
 # requirements").
 #
-# chiaki-ng is cloned here (CI has direct github access; the local-testing
-# variant in .local-ctx injects it via a named libchiaki-src context).
+# chiaki-ng is injected via the chiaki-ng named build context
+# (release.yml fetches + caches it once, shared by all jobs):
+#   docker buildx build --build-context chiaki-ng=$SRC ...
 FROM alpine:3.22 AS build
-ARG CHIAKI_VERSION=v1.10.0
 
 RUN <<EOF
 set -e
@@ -43,14 +43,8 @@ apk add --no-cache \
 EOF
 
 WORKDIR /build
-RUN <<EOF
-set -e
-git clone --quiet https://github.com/streetpea/chiaki-ng.git /build/chiaki-ng
-git -C /build/chiaki-ng checkout --quiet "$CHIAKI_VERSION"
-git -C /build/chiaki-ng submodule --quiet update --init \
-    third-party/nanopb third-party/jerasure third-party/gf-complete \
-    third-party/curl
-EOF
+# 源码来自命名 context (chiaki-ng 目录即 context 根)。
+COPY --from=chiaki-ng / /build/chiaki-ng
 COPY thread-clockjoin-musl.patch /build/thread-clockjoin-musl.patch
 RUN <<EOF
 set -e
