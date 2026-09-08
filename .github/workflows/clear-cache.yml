@@ -1,0 +1,34 @@
+# 手动触发: 清除当前分支下全部 Actions caches
+# (actions/cache 的 chiaki-ng-* / musl-rootfs-* 与 buildx 的 type=gha layer cache,
+# 一并清空, 下次 workflow 全量重建)。
+name: Clear caches
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  clear:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clear caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # DELETE /actions/caches 要求 key 参数 (模糊匹配), 无法只按 ref
+          # 全删; 改为先列出 ref 下全部 cache id, 逐个 DELETE。
+          IDS="$(gh api "/repos/${{ github.repository }}/actions/caches?ref=${{ github.ref }}" \
+            --jq '.actions_caches[].id')"
+          if [ -z "$IDS" ]; then
+            echo "no caches for ${{ github.ref }}"
+            exit 0
+          fi
+          for id in $IDS; do
+            gh api --method DELETE \
+              "/repos/${{ github.repository }}/actions/caches/$id" \
+              --silent
+            echo "deleted cache $id"
+          done
+          echo "cleared ${{ github.ref }}"
